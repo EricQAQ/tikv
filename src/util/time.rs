@@ -105,6 +105,7 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    // 创建监控打点对象, Monitor对象的handle属性是一个线程
     pub fn new<D, N>(on_jumped: D, now: N) -> Monitor
     where
         D: Fn() + Send + 'static,
@@ -112,7 +113,7 @@ impl Monitor {
     {
         let (tx, rx) = mpsc::channel();
         let h = Builder::new()
-            .name(thd_name!("time-monitor"))
+            .name(thd_name!("time-monitor"))     // 指定线程名称
             .spawn(move || {
                 while let Err(_) = rx.try_recv() {
                     let before = now();

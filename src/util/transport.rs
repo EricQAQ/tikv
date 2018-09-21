@@ -94,6 +94,7 @@ impl<T> Sender<T> for mpsc::SyncSender<T> {
 }
 
 /// A channel that handles errors with retry automatically.
+// 一个可以自动重试的channel对象
 pub struct RetryableSendCh<T, C> {
     ch: C,
     name: &'static str,

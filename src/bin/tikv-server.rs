@@ -76,13 +76,19 @@ use tikv::util::{self as tikv_util, panic_hook, rocksdb as rocksdb_util};
 
 const RESERVED_OPEN_FDS: u64 = 1000;
 
+// 检验一些tikv需要关注的系统配置
 fn check_system_config(config: &TiKvConfig) {
+    // 检验该进程能打开的最大文件描述的值
     if let Err(e) = tikv_util::config::check_max_open_fds(
         RESERVED_OPEN_FDS + (config.rocksdb.max_open_files + config.raftdb.max_open_files) as u64,
     ) {
         fatal!("{:?}", e);
     }
 
+    // 检查内核参数
+    // - `net.core.somaxconn` should be greater or equak to 32768.
+    // - `net.ipv4.tcp_syncookies` should be 0
+    // - `vm.swappiness` shoud be 0
     for e in tikv_util::config::check_kernel() {
         warn!("{:?}", e);
     }
@@ -97,16 +103,23 @@ fn check_system_config(config: &TiKvConfig) {
     }
 }
 
+// 启动raft server
 fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<SecurityManager>) {
+    // 存储路径
     let store_path = Path::new(&cfg.storage.data_dir);
+    // 锁路径
     let lock_path = store_path.join(Path::new("LOCK"));
+    // rocksdb路径
     let db_path = store_path.join(Path::new(DEFAULT_ROCKSDB_SUB_DIR));
     let snap_path = store_path.join(Path::new("snap"));
+    // raft文件路径
     let raft_db_path = Path::new(&cfg.raft_store.raftdb_path);
     let import_path = store_path.join("import");
 
     let f = File::create(lock_path.as_path())
         .unwrap_or_else(|e| fatal!("failed to create lock at {}: {:?}", lock_path.display(), e));
+    // try_lock_exclusive函数的作用是 锁定这个文件用来提供共享使用, 如果这个文件已经被上锁,
+    // 则返回错误
     if f.try_lock_exclusive().is_err() {
         fatal!(
             "lock {:?} failed, maybe another instance is using this directory.",
@@ -115,8 +128,10 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
     }
 
     // Initialize raftstore channels.
+    // 创建event loop
     let mut event_loop = store::create_event_loop(&cfg.raft_store)
         .unwrap_or_else(|e| fatal!("failed to create event loop: {:?}", e));
+    // EventLoop的channel函数: 用来创建一个可以发送信息到event loop的channel
     let store_sendch = SendCh::new(event_loop.channel(), "raftstore");
     let (significant_msg_sender, significant_msg_receiver) = mpsc::channel();
 
@@ -129,6 +144,7 @@ fn run_raft_server(pd_client: RpcClient, cfg: &TiKvConfig, security_mgr: Arc<Sec
     // Create router.
     let raft_router =
         ServerRaftStoreRouter::new(store_sendch.clone(), significant_msg_sender, local_ch);
+    // 创建监听store_sendch这个send channel的listener
     let compaction_listener = new_compaction_listener(store_sendch.clone());
 
     // Create pd client and pd worker
@@ -372,6 +388,7 @@ fn main() {
         process::exit(0);
     }
 
+    // 从配置文件中load配置
     let mut config = matches
         .value_of("config")
         .map_or_else(TiKvConfig::default, |path| TiKvConfig::from_file(&path));
@@ -385,6 +402,7 @@ fn main() {
     // Sets the global logger ASAP.
     // It is okay to use the config w/o `validata()`,
     // because `init_log()` handles various conditions.
+    // 初始化log配置
     let guard = init_log(&config);
     panic_hook::set_exit_hook(false, Some(guard));
 
@@ -405,21 +423,27 @@ fn main() {
 
     check_environment_variables();
 
+    // 创建安全连接对象
     let security_mgr = Arc::new(
         SecurityManager::new(&config.security)
             .unwrap_or_else(|e| fatal!("failed to create security manager: {:?}", e)),
     );
+    // 创建连接到pd的rpc客户端
     let pd_client = RpcClient::new(&config.pd, Arc::clone(&security_mgr))
         .unwrap_or_else(|e| fatal!("failed to create rpc client: {:?}", e));
+    // 通过rpc调用pd, 获取cluster_id
     let cluster_id = pd_client
         .get_cluster_id()
         .unwrap_or_else(|e| fatal!("failed to get cluster id: {:?}", e));
     if cluster_id == DEFAULT_CLUSTER_ID {
         fatal!("cluster id can't be {}", DEFAULT_CLUSTER_ID);
     }
+    // 设置cluster_id
     config.server.cluster_id = cluster_id;
     info!("connect to PD cluster {}", cluster_id);
 
+    // 创建监控打点线程
     let _m = Monitor::default();
+    // 启动raft server
     run_raft_server(pd_client, &config, security_mgr);
 }

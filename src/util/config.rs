@@ -564,27 +564,42 @@ pub fn canonicalize_sub_path(path: &str, sub_path: &str) -> Result<String, Box<E
     Ok(format!("{}", p.canonicalize()?.display()))
 }
 
+/// 检验系统最大文件描述符是否>=expect值
+/// 如果大于, 则返回Ok(())
+/// 如果不满足, 则尝试修改系统最大文件描述符个数
 #[cfg(unix)]
 pub fn check_max_open_fds(expect: u64) -> Result<(), ConfigError> {
     use libc;
     use std::mem;
 
     unsafe {
+        // 申请内存空间, 内存全部用0填充
         let mut fd_limit = mem::zeroed();
+        // 本质是调用C提供的getrlimit函数, 用来获取资源使用的限制, 函数原型:
+        // int getrlimit(int resource, struct rlimit *rlim);
+        // 第一个参数为RLIMIT_NOFILE表示此进程可打开的最大文件描述符的值, 超过这个值会报错
+        // 第二个参数在c中是(rlimit *)指针:
+        // struct rlimit {
+        //      rlim_t rlim_cur;
+        //      rlim_t rlim_max;
+        // };
         let mut err = libc::getrlimit(libc::RLIMIT_NOFILE, &mut fd_limit);
         if err != 0 {
             return Err(ConfigError::Limit("check_max_open_fds failed".to_owned()));
         }
+        // 当前最大文件描述符的值符合预期
         if fd_limit.rlim_cur >= expect {
             return Ok(());
         }
 
+        // 不符合预期, 尝试修改
         let prev_limit = fd_limit.rlim_cur;
         fd_limit.rlim_cur = expect;
         if fd_limit.rlim_max < expect {
             // If the process is not started by privileged user, this will fail.
             fd_limit.rlim_max = expect;
         }
+        // 修改能打开的最大文件描述符的值
         err = libc::setrlimit(libc::RLIMIT_NOFILE, &fd_limit);
         if err == 0 {
             return Ok(());
